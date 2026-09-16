@@ -1,0 +1,6 @@
+{
+  "name": "BLINK",
+  "description": "A beautiful, modern, AI-powered news platform presenting important news in concise, 30–60 second summaries. Big stories. Short summaries. More time for you.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
