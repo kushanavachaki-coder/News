@@ -3,8 +3,9 @@ import { RSS_SOURCES, RSSFeedSource } from "./rssConfig";
 import { NewsStory } from "./types";
 import { GoogleGenAI, Type } from "@google/genai";
 
-// Initialize RSS Parser
+// Initialize RSS Parser with a 5-second timeout
 const parser = new Parser({
+  timeout: 5000,
   customFields: {
     item: [
       ["media:content", "mediaContent"],
@@ -163,6 +164,9 @@ export async function fetchLiveNews(): Promise<NewsStory[]> {
         const rawContent = cleanHtml((item as any).content || (item as any).description || item.contentSnippet || "");
         const pubDate = item.pubDate || item.isoDate || new Date().toISOString();
 
+        const parsedPubDate = pubDate ? new Date(pubDate) : new Date();
+        const pubDateMs = isNaN(parsedPubDate.getTime()) ? Date.now() : parsedPubDate.getTime();
+
         // Standardize news item
         const story: NewsStory = {
           id: `live-${source.id}-${Math.random().toString(36).slice(2, 9)}`,
@@ -179,7 +183,8 @@ export async function fetchLiveNews(): Promise<NewsStory[]> {
           originalUrl: originalUrl,
           keyPoints: [],
           whatHappened: rawContent.slice(0, 400),
-          background: ""
+          background: "",
+          pubDateMs: pubDateMs
         };
 
         allStories.push(story);
@@ -192,12 +197,11 @@ export async function fetchLiveNews(): Promise<NewsStory[]> {
 
   await Promise.all(fetchPromises);
 
-  // Filter out any stale/empty items and sort chronological
+  // Filter out any stale/empty items and sort chronological by actual publication timestamp, newest first
   const activeStories = allStories
     .filter(s => s.title.trim().length > 5 && s.fullContent && s.fullContent.length > 20)
     .sort((a, b) => {
-      // Keep breaking ones first, then sort by relative freshness
-      return b.publishedAt.includes("now") || b.publishedAt.includes("min") ? 1 : -1;
+      return (b.pubDateMs || 0) - (a.pubDateMs || 0);
     });
 
   console.log(`Live News Ingestion completed. Successfully normalized ${activeStories.length} de-duplicated news stories.`);
@@ -294,25 +298,24 @@ export async function summarizeStoryWithGemini(
     return {
       ...story,
       summary: data.summary || story.summary,
-      whyItMatters: data.whyItMatters || "Significantly affects the sector dynamics and monitoring frameworks.",
-      keyPoints: data.keyPoints || [],
+      whyItMatters: data.whyItMatters || `This update addresses reported developments in the ${story.category} category.`,
+      keyPoints: data.keyPoints && data.keyPoints.length > 0 ? data.keyPoints : [story.summary],
       readTime: data.estimatedReadingTime || story.readTime,
       isBreaking: data.isBreaking !== undefined ? data.isBreaking : story.isBreaking,
-      whatHappened: data.summary,
-      background: story.background || `Reported developments from ${story.source} indicate ongoing advancements in this domain.`
+      whatHappened: data.summary || story.summary,
+      background: story.background || "AI-generated background context is temporarily unavailable."
     };
   } catch (err) {
     console.error(`Gemini summary generation failed for story: "${story.title}":`, err);
-    // Return story with high-quality fallback values on failure
+    // Return story with high-quality fallback values on failure (grounded in the real RSS content only)
     return {
       ...story,
-      whyItMatters: "This live news event highlights critical developments within this category.",
+      whyItMatters: "AI-generated significance analysis is temporarily offline.",
       keyPoints: [
-        "Major report published by trusted publishers.",
-        "Details ongoing developments and changes affecting this category.",
-        "Reflects immediate real-world impacts."
+        "AI key points extraction is temporarily offline.",
+        story.summary || "No description provided."
       ],
-      background: `This story was ingested in real-time from our centralized public feed provided by ${story.source}.`
+      background: `Ingested in real-time from the public feed of ${story.source}. AI context is currently unavailable.`
     };
   }
 }

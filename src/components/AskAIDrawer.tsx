@@ -53,7 +53,7 @@ export default function AskAIDrawer({ story, onClose }: AskAIDrawerProps) {
     fetch("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ storyId: story.id, question: textToSend }),
+      body: JSON.stringify({ storyId: story.id, story: story, question: textToSend }),
     })
       .then((res) => {
         if (!res.ok) throw new Error("Could not reach AI assistant.");

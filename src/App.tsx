@@ -216,7 +216,7 @@ export default function App() {
       fetch("/api/story/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storyId: story.id })
+        body: JSON.stringify({ storyId: story.id, story: story })
       })
         .then((res) => {
           if (!res.ok) throw new Error("Summarization failed");

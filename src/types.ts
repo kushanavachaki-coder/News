@@ -15,6 +15,7 @@ export interface NewsStory {
   whatHappened?: string;
   background?: string;
   originalUrl?: string;
+  pubDateMs?: number;
 }
 
 export interface TimelineItem {

@@ -3,10 +3,17 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData.js";
+import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData";
 import { fetchLiveNews, summarizeStoryWithGemini, callGeminiWithRetry } from "./src/rssProcessor";
 import { RSS_SOURCES } from "./src/rssConfig";
 import { NewsStory } from "./src/types";
+import {
+  LIVE_STORIES_CACHE,
+  IS_FETCHING_FEEDS,
+  getAiClient,
+  updateLiveNewsCache,
+  getDynamicTrendingTopics,
+} from "./src/backendState";
 
 // Load environment variables
 dotenv.config();
@@ -16,127 +23,11 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// In-memory cache for live fetched news
-let LIVE_STORIES_CACHE: NewsStory[] = [];
-let IS_FETCHING_FEEDS = false;
-
-// Lazy-initialize Gemini SDK to avoid crashes if API key is missing
-let aiClient: GoogleGenAI | null = null;
-
-function getAiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
-    return null;
-  }
-  if (!aiClient) {
-    aiClient = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  }
-  return aiClient;
-}
-
-// Background Task: Periodic live news cache updates
-async function updateLiveNewsCache() {
-  if (IS_FETCHING_FEEDS) return;
-  IS_FETCHING_FEEDS = true;
-  console.log("[BLINK] Fetching live news from RSS feeds...");
-  try {
-    const liveStories = await fetchLiveNews();
-    if (liveStories && liveStories.length > 0) {
-      // Merge live stories with existing cached ones to preserve any already-generated summaries
-      const updatedCache: NewsStory[] = [];
-      const existingMap = new Map(LIVE_STORIES_CACHE.map((s) => [s.title, s]));
-
-      for (const story of liveStories) {
-        const existing = existingMap.get(story.title);
-        if (existing && existing.whyItMatters && existing.whyItMatters.trim() !== "") {
-          updatedCache.push(existing);
-        } else {
-          updatedCache.push(story);
-        }
-      }
-
-      LIVE_STORIES_CACHE = updatedCache;
-      console.log(`[BLINK] Cache updated. Total live stories: ${LIVE_STORIES_CACHE.length}`);
-
-      // Background Pre-summarization of the first 5 stories for the Daily Briefing
-      const ai = getAiClient();
-      if (ai) {
-        const briefingStories = LIVE_STORIES_CACHE.slice(0, 5);
-        console.log(`[BLINK] Starting background pre-summarization for top ${briefingStories.length} Daily Briefing stories...`);
-
-        for (const story of briefingStories) {
-          if (!story.whyItMatters || story.whyItMatters.trim() === "") {
-            try {
-              // Add a generous 3.5 second spacing delay to prevent hitting concurrent Gemini rate-limits
-              await new Promise((resolve) => setTimeout(resolve, 3500));
-              const summarized = await summarizeStoryWithGemini(ai, story);
-              const idx = LIVE_STORIES_CACHE.findIndex((s) => s.id === story.id);
-              if (idx !== -1) {
-                LIVE_STORIES_CACHE[idx] = summarized;
-                console.log(`[BLINK] Pre-summarized briefing story: "${story.title}"`);
-              }
-            } catch (sumErr) {
-              console.error(`[BLINK] Failed pre-summarizing story "${story.title}":`, sumErr);
-            }
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[BLINK] Error during background live feed fetch:", err);
-  } finally {
-    IS_FETCHING_FEEDS = false;
-  }
-}
-
-// Start initial feed fetch at startup
-updateLiveNewsCache();
-
-// Poll every 15 minutes for new articles
-setInterval(updateLiveNewsCache, 15 * 60 * 1000);
-
-// Helper to extract dynamic trending topics from stories cache
-function getDynamicTrendingTopics(stories: NewsStory[]): any[] {
-  const usedCategories = new Set<string>();
-  const trending: any[] = [];
-  let position = 1;
-
-  for (const story of stories) {
-    if (trending.length >= 5) break;
-    if (!usedCategories.has(story.category)) {
-      usedCategories.add(story.category);
-      trending.push({
-        id: `trend-${story.id}`,
-        topic: story.category,
-        position: position++,
-        label: story.title.length > 30 ? story.title.slice(0, 30) + "..." : story.title,
-        imageUrl: story.imageUrl,
-      });
-    }
-  }
-
-  // Fallback to initial topics if needed
-  if (trending.length < 5) {
-    const existingTopics = TRENDING_TOPICS;
-    for (const topic of existingTopics) {
-      if (trending.length >= 5) break;
-      if (!trending.some((t) => t.topic === topic.topic)) {
-        trending.push({
-          ...topic,
-          position: position++,
-        });
-      }
-    }
-  }
-
-  return trending;
+// Start initial feed fetch at startup for local/dev
+if (!process.env.VERCEL) {
+  updateLiveNewsCache();
+  // Poll every 15 minutes for new articles
+  setInterval(updateLiveNewsCache, 15 * 60 * 1000);
 }
 
 // API Routes
@@ -201,14 +92,12 @@ app.post("/api/story/summarize", async (req, res) => {
 
   const ai = getAiClient();
   if (!ai) {
-    // Return high-quality local fallbacks if Gemini is not configured
-    story.whyItMatters = "This live news event highlights critical developments within this category.";
+    // Return grounded local fallbacks if Gemini is not configured
+    story.whyItMatters = "AI significance analysis is temporarily unavailable.";
     story.keyPoints = [
-      "Major report published by trusted publishers.",
-      "Details ongoing developments and changes affecting this category.",
-      "Reflects immediate real-world impacts."
+      story.summary || "No description provided."
     ];
-    story.background = `This story was ingested in real-time from our centralized public feed provided by ${story.source}.`;
+    story.background = "AI historical context is temporarily unavailable.";
     return res.json({ story });
   }
 
@@ -247,10 +136,10 @@ app.post("/api/explain", async (req, res) => {
     console.log("Gemini API key not configured. Using local structured fallback.");
     return res.json({
       whatHappened: story.whatHappened || story.summary,
-      whyImportant: story.whyItMatters || "This development could have significant implications for the sector, potentially altering existing policies or market conditions.",
-      background: story.background || "Ongoing global trends and historical contexts pave the way for this event, as organizations seek optimized structures and solutions.",
-      whoIsAffected: `Individuals, companies, and researchers in the ${story.category} sector.`,
-      whatHappensNext: "Organizations will begin monitoring telemetry, adapting their frameworks, and releasing subsequent updates as results unfold.",
+      whyImportant: story.whyItMatters || "AI-generated deep-dive is currently unavailable. No additional significance data is present in the source RSS feed.",
+      background: story.background || "AI-generated historical background is currently unavailable.",
+      whoIsAffected: `Direct audiences and observers of the ${story.category} category.`,
+      whatHappensNext: "AI future predictions are unavailable without active Gemini API keys.",
       isSimulated: true,
       message: "Connect your Gemini API Key in Settings > Secrets to unlock live AI summaries!"
     });
@@ -302,10 +191,10 @@ app.post("/api/explain", async (req, res) => {
     console.error("Gemini Explain Error:", error);
     return res.json({
       whatHappened: story.whatHappened || story.summary,
-      whyImportant: story.whyItMatters || "This development is highly relevant as it addresses core problems in the industry.",
-      background: story.background || "This follows extensive research, trials, and strategic shifting within the global ecosystem.",
-      whoIsAffected: `Direct stakeholders and general audiences interested in ${story.category}.`,
-      whatHappensNext: "Immediate validation is underway, and further detailed reports are expected shortly.",
+      whyImportant: "AI significance analysis is temporarily unavailable due to a service error.",
+      background: "AI historical context is temporarily unavailable due to a service error.",
+      whoIsAffected: "Specific stakeholder mapping is temporarily unavailable.",
+      whatHappensNext: "Next-step analysis is temporarily unavailable.",
       isSimulated: true,
       error: error.message || "An error occurred while generating explanation."
     });
@@ -332,28 +221,10 @@ app.post("/api/ask", async (req, res) => {
   if (!ai) {
     console.log("Gemini API key not configured. Using local AI query engine.");
     
-    const q = question.toLowerCase();
-    let answer = "";
-    
-    if (q.includes("explain simply") || q.includes("simply") || q.includes("simple")) {
-      answer = `Here is a simple explanation of this story: **${story.title}**. Basically, ${story.summary.replace(/^\w/, c => c.toLowerCase())} This is done by ${story.source} to address critical scientific, environmental, or technological needs.`;
-    } else if (q.includes("why is this important") || q.includes("important") || q.includes("why it matters")) {
-      answer = `This is extremely important because: ${story.whyItMatters || "it marks a significant breakthrough that can reshape industry practices, saving resources or improving ecological monitoring."}`;
-    } else if (q.includes("background") || q.includes("before") || q.includes("history")) {
-      answer = `For context: ${story.background || "This development is built on years of research, responding to global issues such as ocean climate changes, AI capability milestones, or high-performance scientific needs."}`;
-    } else if (q.includes("summarize") || q.includes("points") || q.includes("3 points") || q.includes("three points")) {
-      const points = story.keyPoints || [
-        "Major milestone achieved in the field.",
-        "Solves a long-standing physical or operational bottleneck.",
-        "Lays down the foundation for future scalable developments."
-      ];
-      answer = `Here is a 3-point summary:\n\n1. ${points[0] || "Major step forward."}\n2. ${points[1] || "Addresses core limitations."}\n3. ${points[2] || "Unlocks long-term benefits."}`;
-    } else {
-      answer = `Regarding your question "${question}": Based on the reporting by ${story.source}, the story focuses on: "${story.summary}". ${story.whyItMatters ? `An important aspect is that: ${story.whyItMatters}` : ""}`;
-    }
+    const explanationText = `Offline Mode: No Gemini API Key is configured. Based strictly on the verified story summary: "${story.summary}" (reported by ${story.source}). To ask custom interactive questions, please connect your Gemini API Key under Settings > Secrets.`;
 
     return res.json({
-      answer: answer,
+      answer: explanationText,
       isSimulated: true,
       message: "Connect your Gemini API Key in Settings > Secrets to unlock live AI Chat!"
     });
@@ -396,7 +267,7 @@ app.post("/api/ask", async (req, res) => {
   } catch (error: any) {
     console.error("Gemini Ask Error:", error);
     return res.json({
-      answer: `I apologize, but I encountered an error answering your question. Here is a brief summary of the story that might help:\n\n${story.summary}`,
+      answer: `I apologize, but I encountered an error answering your question. Live AI chat is temporarily unavailable. Here is the verified report summary:\n\n${story.summary}`,
       isSimulated: true,
       error: error.message || "Error occurred with Gemini query."
     });
