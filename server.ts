@@ -4,7 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData.js";
-import { fetchLiveNews, summarizeStoryWithGemini } from "./src/rssProcessor";
+import { fetchLiveNews, summarizeStoryWithGemini, callGeminiWithRetry } from "./src/rssProcessor";
 import { RSS_SOURCES } from "./src/rssConfig";
 import { NewsStory } from "./src/types";
 
@@ -65,27 +65,25 @@ async function updateLiveNewsCache() {
       LIVE_STORIES_CACHE = updatedCache;
       console.log(`[BLINK] Cache updated. Total live stories: ${LIVE_STORIES_CACHE.length}`);
 
-      // Background Pre-summarization of the top story of each category with Gemini
+      // Background Pre-summarization of the first 5 stories for the Daily Briefing
       const ai = getAiClient();
       if (ai) {
-        const categories = Array.from(new Set(LIVE_STORIES_CACHE.map((s) => s.category)));
-        console.log(`[BLINK] Starting background pre-summarization for categories...`);
+        const briefingStories = LIVE_STORIES_CACHE.slice(0, 5);
+        console.log(`[BLINK] Starting background pre-summarization for top ${briefingStories.length} Daily Briefing stories...`);
 
-        for (const cat of categories) {
-          // Find the first story in this category that doesn't have an AI summary
-          const topStory = LIVE_STORIES_CACHE.find(
-            (s) => s.category === cat && (!s.whyItMatters || s.whyItMatters.trim() === "")
-          );
-          if (topStory) {
+        for (const story of briefingStories) {
+          if (!story.whyItMatters || story.whyItMatters.trim() === "") {
             try {
-              const summarized = await summarizeStoryWithGemini(ai, topStory);
-              const idx = LIVE_STORIES_CACHE.findIndex((s) => s.id === topStory.id);
+              // Add a generous 3.5 second spacing delay to prevent hitting concurrent Gemini rate-limits
+              await new Promise((resolve) => setTimeout(resolve, 3500));
+              const summarized = await summarizeStoryWithGemini(ai, story);
+              const idx = LIVE_STORIES_CACHE.findIndex((s) => s.id === story.id);
               if (idx !== -1) {
                 LIVE_STORIES_CACHE[idx] = summarized;
-                console.log(`[BLINK] Pre-summarized [${cat}]: "${topStory.title}"`);
+                console.log(`[BLINK] Pre-summarized briefing story: "${story.title}"`);
               }
             } catch (sumErr) {
-              console.error(`[BLINK] Failed pre-summarizing [${cat}]:`, sumErr);
+              console.error(`[BLINK] Failed pre-summarizing story "${story.title}":`, sumErr);
             }
           }
         }
@@ -279,8 +277,8 @@ app.post("/api/explain", async (req, res) => {
       Keep the explanations extremely concise, easy-to-read, and targeted for a general audience.
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+    const response = await callGeminiWithRetry(() => ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -296,7 +294,7 @@ app.post("/api/explain", async (req, res) => {
           required: ["whatHappened", "whyImportant", "background", "whoIsAffected", "whatHappensNext"],
         },
       },
-    });
+    }));
 
     const explanation = JSON.parse(response.text || "{}");
     return res.json({ ...explanation, isSimulated: false });
@@ -386,10 +384,10 @@ app.post("/api/ask", async (req, res) => {
       - Keep your answer concise (1-3 paragraphs or simple bullet points), as the user values quick consumption.
     `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+    const response = await callGeminiWithRetry(() => ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
       contents: prompt,
-    });
+    }));
 
     return res.json({
       answer: response.text || "I was unable to formulate a response. Please try again.",
@@ -421,9 +419,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

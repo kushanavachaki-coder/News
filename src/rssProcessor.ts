@@ -205,6 +205,38 @@ export async function fetchLiveNews(): Promise<NewsStory[]> {
 }
 
 /**
+ * Executes a Gemini function with automatic retries on 503 (Unavailable) and 429 (Too Many Requests) errors.
+ * Includes exponential backoff and randomized jitter to prevent rate limit collisions.
+ */
+export async function callGeminiWithRetry<T>(
+  fn: () => Promise<T>,
+  retries = 5,
+  delayMs = 2000
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    const errorStr = String(error?.message || error?.status || error?.code || JSON.stringify(error) || error);
+    const isTransient = 
+      errorStr.includes("503") || 
+      errorStr.includes("UNAVAILABLE") || 
+      errorStr.includes("429") || 
+      errorStr.includes("RESOURCE_EXHAUSTED") ||
+      (error && (error.status === 503 || error.status === 429 || error.code === 503 || error.code === 429 || error.status === "UNAVAILABLE"));
+
+    if (retries > 0 && isTransient) {
+      // Exponential backoff + random jitter between 0% and 50%
+      const jitter = Math.random() * 0.5 * delayMs;
+      const backoffDelay = delayMs + jitter;
+      console.warn(`[BLINK] Gemini API returned transient error (503/429/UNAVAILABLE). Retrying in ${Math.round(backoffDelay)}ms... (${retries} attempts left)`);
+      await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+      return callGeminiWithRetry(fn, retries - 1, delayMs * 2);
+    }
+    throw error;
+  }
+}
+
+/**
  * Summarize a story using Gemini on the server side
  */
 export async function summarizeStoryWithGemini(
@@ -235,8 +267,8 @@ export async function summarizeStoryWithGemini(
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+    const response = await callGeminiWithRetry(() => ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -256,7 +288,7 @@ export async function summarizeStoryWithGemini(
           required: ["summary", "whyItMatters", "keyPoints", "estimatedReadingTime", "isBreaking"]
         }
       }
-    });
+    }));
 
     const data = JSON.parse(response.text || "{}");
     return {

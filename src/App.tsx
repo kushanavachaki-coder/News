@@ -62,9 +62,17 @@ export default function App() {
   const [activeCategory, setActiveCategory] = useState("For You");
   
   // Data State
-  const [stories, setStories] = useState<NewsStory[]>(INITIAL_STORIES);
+  const [stories, setStories] = useState<NewsStory[]>(() => {
+    const cached = localStorage.getItem("blink_cached_real_news");
+    return cached ? JSON.parse(cached) : [];
+  });
   const [trendingTopics, setTrendingTopics] = useState<TrendingTopic[]>(TRENDING_TOPICS);
   const [isLoading, setIsLoading] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [liveNewsUnavailable, setLiveNewsUnavailable] = useState(() => {
+    const cached = localStorage.getItem("blink_cached_real_news");
+    return !cached;
+  });
 
   // Daily Quote Selection
   const [dailyQuote, setDailyQuote] = useState(() => {
@@ -124,15 +132,33 @@ export default function App() {
     setIsLoading(true);
     fetch("/api/news")
       .then((res) => {
-        if (!res.ok) throw new Error("API boots progressively.");
+        if (!res.ok) throw new Error("API request failed.");
         return res.json();
       })
       .then((data) => {
-        if (data.stories) setStories(data.stories);
-        if (data.trendingTopics) setTrendingTopics(data.trendingTopics);
+        if (data.stories && data.stories.length > 0) {
+          setStories(data.stories);
+          localStorage.setItem("blink_cached_real_news", JSON.stringify(data.stories));
+          setLiveNewsUnavailable(false);
+        } else {
+          throw new Error("No live stories returned.");
+        }
+        if (data.trendingTopics) {
+          setTrendingTopics(data.trendingTopics);
+        }
       })
       .catch((err) => {
-        console.log("Using static data.", err);
+        console.error("Live news API error:", err);
+        const cached = localStorage.getItem("blink_cached_real_news");
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.length > 0) {
+            setStories(parsed);
+            setLiveNewsUnavailable(false);
+            return;
+          }
+        }
+        setLiveNewsUnavailable(true);
       })
       .finally(() => {
         setIsLoading(false);
@@ -292,9 +318,74 @@ export default function App() {
           />
         )}
 
+        {isDemoMode && (
+          <div className="bg-amber-50 border-y border-amber-100 text-amber-800 text-[10px] font-bold px-4 py-2 flex items-center justify-between shrink-0" id="demo-mode-banner">
+            <span>⚡ DEMO MODE ACTIVE — Fictional Sample Stories</span>
+            <button 
+              onClick={() => {
+                setIsDemoMode(false);
+                setLiveNewsUnavailable(true);
+                setStories([]);
+              }}
+              className="underline hover:text-amber-950 font-extrabold"
+            >
+              Exit
+            </button>
+          </div>
+        )}
+
         {/* ----------------- APP TABS ROUTER ----------------- */}
 
-        {selectedStoryDetail ? (
+        {liveNewsUnavailable && !isDemoMode ? (
+          <div className="flex-1 flex flex-col p-6 justify-center items-center text-center space-y-6" id="offline-screen">
+            <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center border border-indigo-100 text-indigo-500 animate-pulse">
+              <Zap className="w-8 h-8 fill-current" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-black text-indigo-950">Live News Temporarily Offline</h2>
+              <p className="text-sm text-slate-500 font-semibold leading-relaxed">
+                We are currently unable to fetch real-time news. Please check back shortly, or activate demo mode to test features with fictional sample data.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2.5 w-full">
+              <button
+                onClick={() => {
+                  setIsDemoMode(true);
+                  setLiveNewsUnavailable(false);
+                  setStories(INITIAL_STORIES);
+                  setTrendingTopics(TRENDING_TOPICS);
+                }}
+                className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-2xl shadow-lg shadow-indigo-600/15 transition-all text-sm tracking-wide"
+                id="activate-demo-btn"
+              >
+                Activate Demo Mode
+              </button>
+              <button
+                onClick={() => {
+                  setIsLoading(true);
+                  fetch("/api/news")
+                    .then((res) => {
+                      if (!res.ok) throw new Error("Unavailable");
+                      return res.json();
+                    })
+                    .then((data) => {
+                      if (data.stories && data.stories.length > 0) {
+                        setStories(data.stories);
+                        localStorage.setItem("blink_cached_real_news", JSON.stringify(data.stories));
+                        setLiveNewsUnavailable(false);
+                      }
+                    })
+                    .catch(() => setLiveNewsUnavailable(true))
+                    .finally(() => setIsLoading(false));
+                }}
+                className="w-full py-3 bg-white border border-slate-200 hover:bg-slate-50 text-indigo-950/70 font-bold rounded-2xl transition text-sm"
+                id="retry-connection-btn"
+              >
+                {isLoading ? "Reconnecting..." : "Retry Connection"}
+              </button>
+            </div>
+          </div>
+        ) : selectedStoryDetail ? (
           /* IMPILED IMPLICIT DETAIL REPLACEMENT (Preserving Detail flow) */
           <StoryDetail
             story={selectedStoryDetail}

@@ -37,10 +37,10 @@ export const RSS_SOURCES: RSSFeedSource[] = [
     publisher: "TechCrunch"
   },
   {
-    id: "sciencedaily-biotech",
-    url: "https://www.sciencedaily.com/rss/matter_energy/biotechnology.xml",
+    id: "physorg-biotech",
+    url: "https://phys.org/rss-feed/biology-news/biotechnology/",
     category: "Biotechnology",
-    publisher: "ScienceDaily"
+    publisher: "Phys.org"
   },
   {
     id: "space-com",
@@ -49,10 +49,10 @@ export const RSS_SOURCES: RSSFeedSource[] = [
     publisher: "Space.com"
   },
   {
-    id: "sciencedaily-space",
-    url: "https://www.sciencedaily.com/rss/space_time/space_astronomy.xml",
+    id: "physorg-space",
+    url: "https://phys.org/rss-feed/space-news/",
     category: "Space",
-    publisher: "ScienceDaily"
+    publisher: "Phys.org"
   },
   {
     id: "bbc-environment",
@@ -67,10 +67,10 @@ export const RSS_SOURCES: RSSFeedSource[] = [
     publisher: "Grist"
   },
   {
-    id: "espn-sports",
-    url: "https://www.espn.com/espn/rss/news",
+    id: "bbc-sports",
+    url: "https://feeds.bbci.co.uk/sport/rss.xml",
     category: "Sports",
-    publisher: "ESPN"
+    publisher: "BBC Sport"
   },
   {
     id: "bbc-entertainment",
