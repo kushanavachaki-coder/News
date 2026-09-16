@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowLeft, Clock, Bookmark, HelpCircle, MessageSquare, ExternalLink, Calendar, CheckCircle2, ChevronRight } from "lucide-react";
+import { ArrowLeft, Clock, Bookmark, HelpCircle, MessageSquare, ExternalLink, Calendar, CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import { NewsStory } from "../types";
 
 interface StoryDetailProps {
@@ -89,12 +89,19 @@ export default function StoryDetail({
           <div className="flex items-center gap-1">
             <CheckCircle2 className="w-4 h-4 text-sky-500" />
             <span className="text-[9px] font-black uppercase tracking-widest text-sky-600">
-              1-Minute AI Summary
+              {(!story.whyItMatters || story.whyItMatters.trim() === "") ? "Processing Story..." : "1-Minute AI Summary"}
             </span>
           </div>
-          <p className="text-base font-bold leading-relaxed text-indigo-950">
-            {story.summary}
-          </p>
+          {(!story.whyItMatters || story.whyItMatters.trim() === "") ? (
+            <div className="flex items-center gap-2 text-indigo-600/80 mt-1 animate-pulse font-bold text-xs">
+              <Sparkles className="w-4 h-4 animate-spin text-sky-500" />
+              <span>Generating AI Blink Summary...</span>
+            </div>
+          ) : (
+            <p className="text-base font-bold leading-relaxed text-indigo-950">
+              {story.summary}
+            </p>
+          )}
         </div>
 
         {/* Detailed Sections */}

@@ -4,6 +4,9 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData.js";
+import { fetchLiveNews, summarizeStoryWithGemini } from "./src/rssProcessor";
+import { RSS_SOURCES } from "./src/rssConfig";
+import { NewsStory } from "./src/types";
 
 // Load environment variables
 dotenv.config();
@@ -12,6 +15,10 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// In-memory cache for live fetched news
+let LIVE_STORIES_CACHE: NewsStory[] = [];
+let IS_FETCHING_FEEDS = false;
 
 // Lazy-initialize Gemini SDK to avoid crashes if API key is missing
 let aiClient: GoogleGenAI | null = null;
@@ -34,19 +41,191 @@ function getAiClient(): GoogleGenAI | null {
   return aiClient;
 }
 
+// Background Task: Periodic live news cache updates
+async function updateLiveNewsCache() {
+  if (IS_FETCHING_FEEDS) return;
+  IS_FETCHING_FEEDS = true;
+  console.log("[BLINK] Fetching live news from RSS feeds...");
+  try {
+    const liveStories = await fetchLiveNews();
+    if (liveStories && liveStories.length > 0) {
+      // Merge live stories with existing cached ones to preserve any already-generated summaries
+      const updatedCache: NewsStory[] = [];
+      const existingMap = new Map(LIVE_STORIES_CACHE.map((s) => [s.title, s]));
+
+      for (const story of liveStories) {
+        const existing = existingMap.get(story.title);
+        if (existing && existing.whyItMatters && existing.whyItMatters.trim() !== "") {
+          updatedCache.push(existing);
+        } else {
+          updatedCache.push(story);
+        }
+      }
+
+      LIVE_STORIES_CACHE = updatedCache;
+      console.log(`[BLINK] Cache updated. Total live stories: ${LIVE_STORIES_CACHE.length}`);
+
+      // Background Pre-summarization of the top story of each category with Gemini
+      const ai = getAiClient();
+      if (ai) {
+        const categories = Array.from(new Set(LIVE_STORIES_CACHE.map((s) => s.category)));
+        console.log(`[BLINK] Starting background pre-summarization for categories...`);
+
+        for (const cat of categories) {
+          // Find the first story in this category that doesn't have an AI summary
+          const topStory = LIVE_STORIES_CACHE.find(
+            (s) => s.category === cat && (!s.whyItMatters || s.whyItMatters.trim() === "")
+          );
+          if (topStory) {
+            try {
+              const summarized = await summarizeStoryWithGemini(ai, topStory);
+              const idx = LIVE_STORIES_CACHE.findIndex((s) => s.id === topStory.id);
+              if (idx !== -1) {
+                LIVE_STORIES_CACHE[idx] = summarized;
+                console.log(`[BLINK] Pre-summarized [${cat}]: "${topStory.title}"`);
+              }
+            } catch (sumErr) {
+              console.error(`[BLINK] Failed pre-summarizing [${cat}]:`, sumErr);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[BLINK] Error during background live feed fetch:", err);
+  } finally {
+    IS_FETCHING_FEEDS = false;
+  }
+}
+
+// Start initial feed fetch at startup
+updateLiveNewsCache();
+
+// Poll every 15 minutes for new articles
+setInterval(updateLiveNewsCache, 15 * 60 * 1000);
+
+// Helper to extract dynamic trending topics from stories cache
+function getDynamicTrendingTopics(stories: NewsStory[]): any[] {
+  const usedCategories = new Set<string>();
+  const trending: any[] = [];
+  let position = 1;
+
+  for (const story of stories) {
+    if (trending.length >= 5) break;
+    if (!usedCategories.has(story.category)) {
+      usedCategories.add(story.category);
+      trending.push({
+        id: `trend-${story.id}`,
+        topic: story.category,
+        position: position++,
+        label: story.title.length > 30 ? story.title.slice(0, 30) + "..." : story.title,
+        imageUrl: story.imageUrl,
+      });
+    }
+  }
+
+  // Fallback to initial topics if needed
+  if (trending.length < 5) {
+    const existingTopics = TRENDING_TOPICS;
+    for (const topic of existingTopics) {
+      if (trending.length >= 5) break;
+      if (!trending.some((t) => t.topic === topic.topic)) {
+        trending.push({
+          ...topic,
+          position: position++,
+        });
+      }
+    }
+  }
+
+  return trending;
+}
+
 // API Routes
 
 // Health check
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", geminiConfigured: !!getAiClient() });
+  res.json({
+    status: "ok",
+    geminiConfigured: !!getAiClient(),
+    liveStoriesCount: LIVE_STORIES_CACHE.length,
+    fetchingFeeds: IS_FETCHING_FEEDS,
+  });
+});
+
+// Force refresh news
+app.post("/api/news/refresh", async (req, res) => {
+  console.log("[BLINK] Manual refresh triggered from UI...");
+  await updateLiveNewsCache();
+  res.json({
+    success: true,
+    liveStoriesCount: LIVE_STORIES_CACHE.length,
+  });
 });
 
 // Get all news stories & trending topics
-app.get("/api/news", (req, res) => {
+app.get("/api/news", async (req, res) => {
+  // If cache is empty, try to fetch immediately
+  if (LIVE_STORIES_CACHE.length === 0 && !IS_FETCHING_FEEDS) {
+    await updateLiveNewsCache();
+  }
+
+  const storiesToReturn = LIVE_STORIES_CACHE.length > 0 ? LIVE_STORIES_CACHE : INITIAL_STORIES;
+  const trending = getDynamicTrendingTopics(storiesToReturn);
+
   res.json({
-    stories: INITIAL_STORIES,
-    trendingTopics: TRENDING_TOPICS,
+    stories: storiesToReturn,
+    trendingTopics: trending,
   });
+});
+
+// Dynamically summarize a story on-demand
+app.post("/api/story/summarize", async (req, res) => {
+  const { storyId } = req.body;
+  if (!storyId) {
+    return res.status(400).json({ error: "storyId is required" });
+  }
+
+  // Find story
+  let story = LIVE_STORIES_CACHE.find((s) => s.id === storyId);
+  if (!story) {
+    story = INITIAL_STORIES.find((s) => s.id === storyId);
+  }
+
+  if (!story) {
+    return res.status(404).json({ error: "Story not found" });
+  }
+
+  // If already summarized, return immediately
+  if (story.whyItMatters && story.whyItMatters.trim() !== "") {
+    return res.json({ story });
+  }
+
+  const ai = getAiClient();
+  if (!ai) {
+    // Return high-quality local fallbacks if Gemini is not configured
+    story.whyItMatters = "This live news event highlights critical developments within this category.";
+    story.keyPoints = [
+      "Major report published by trusted publishers.",
+      "Details ongoing developments and changes affecting this category.",
+      "Reflects immediate real-world impacts."
+    ];
+    story.background = `This story was ingested in real-time from our centralized public feed provided by ${story.source}.`;
+    return res.json({ story });
+  }
+
+  try {
+    const summarized = await summarizeStoryWithGemini(ai, story);
+    // Update story in caches
+    const liveIdx = LIVE_STORIES_CACHE.findIndex((s) => s.id === storyId);
+    if (liveIdx !== -1) {
+      LIVE_STORIES_CACHE[liveIdx] = summarized;
+    }
+    return res.json({ story: summarized });
+  } catch (error: any) {
+    console.error(`[BLINK] Dynamic summarization failed for story ${storyId}:`, error);
+    return res.status(500).json({ error: "Summarization failed", details: error.message });
+  }
 });
 
 // Explain a news story using AI
@@ -57,14 +236,16 @@ app.post("/api/explain", async (req, res) => {
   }
 
   // Find the story
-  const story = INITIAL_STORIES.find((s) => s.id === storyId);
+  let story = LIVE_STORIES_CACHE.find((s) => s.id === storyId);
+  if (!story) {
+    story = INITIAL_STORIES.find((s) => s.id === storyId);
+  }
   if (!story) {
     return res.status(404).json({ error: "Story not found" });
   }
 
   const ai = getAiClient();
   if (!ai) {
-    // Elegant fallback if Gemini is not configured
     console.log("Gemini API key not configured. Using local structured fallback.");
     return res.json({
       whatHappened: story.whatHappened || story.summary,
@@ -121,7 +302,6 @@ app.post("/api/explain", async (req, res) => {
     return res.json({ ...explanation, isSimulated: false });
   } catch (error: any) {
     console.error("Gemini Explain Error:", error);
-    // Graceful fallback on error
     return res.json({
       whatHappened: story.whatHappened || story.summary,
       whyImportant: story.whyItMatters || "This development is highly relevant as it addresses core problems in the industry.",
@@ -142,26 +322,27 @@ app.post("/api/ask", async (req, res) => {
   }
 
   // Find the story
-  const story = INITIAL_STORIES.find((s) => s.id === storyId);
+  let story = LIVE_STORIES_CACHE.find((s) => s.id === storyId);
+  if (!story) {
+    story = INITIAL_STORIES.find((s) => s.id === storyId);
+  }
   if (!story) {
     return res.status(404).json({ error: "Story not found" });
   }
 
   const ai = getAiClient();
   if (!ai) {
-    // Local AI Simulator - highly responsive, context-aware answers!
     console.log("Gemini API key not configured. Using local AI query engine.");
     
-    // Simple rule-based intelligent parser for key questions
     const q = question.toLowerCase();
     let answer = "";
     
     if (q.includes("explain simply") || q.includes("simply") || q.includes("simple")) {
-      answer = `Here is a simple explanation of this story: **${story.title}**. Basically, ${story.summary.replace(/^\w/, c => c.toLowerCase())} This is done by ${story.source} to address climate, technological, or scientific advancements.`;
+      answer = `Here is a simple explanation of this story: **${story.title}**. Basically, ${story.summary.replace(/^\w/, c => c.toLowerCase())} This is done by ${story.source} to address critical scientific, environmental, or technological needs.`;
     } else if (q.includes("why is this important") || q.includes("important") || q.includes("why it matters")) {
       answer = `This is extremely important because: ${story.whyItMatters || "it marks a significant breakthrough that can reshape industry practices, saving resources or improving ecological monitoring."}`;
     } else if (q.includes("background") || q.includes("before") || q.includes("history")) {
-      answer = `For context: ${story.background || "This development is built on years of research, responding to global issues such as ocean climate changes, AI capability milestones, or high-performance solid state battery needs."}`;
+      answer = `For context: ${story.background || "This development is built on years of research, responding to global issues such as ocean climate changes, AI capability milestones, or high-performance scientific needs."}`;
     } else if (q.includes("summarize") || q.includes("points") || q.includes("3 points") || q.includes("three points")) {
       const points = story.keyPoints || [
         "Major milestone achieved in the field.",
@@ -170,7 +351,6 @@ app.post("/api/ask", async (req, res) => {
       ];
       answer = `Here is a 3-point summary:\n\n1. ${points[0] || "Major step forward."}\n2. ${points[1] || "Addresses core limitations."}\n3. ${points[2] || "Unlocks long-term benefits."}`;
     } else {
-      // General answering based on summary
       answer = `Regarding your question "${question}": Based on the reporting by ${story.source}, the story focuses on: "${story.summary}". ${story.whyItMatters ? `An important aspect is that: ${story.whyItMatters}` : ""}`;
     }
 
@@ -195,7 +375,6 @@ app.post("/api/ask", async (req, res) => {
       Key Points: ${JSON.stringify(story.keyPoints || [])}
       What Happened: ${story.whatHappened || ""}
       Background: ${story.background || ""}
-      Timeline: ${JSON.stringify(story.timeline || [])}
       
       USER QUESTION:
       "${question}"
@@ -226,10 +405,8 @@ app.post("/api/ask", async (req, res) => {
   }
 });
 
-
 // Boot the server
 async function startServer() {
-  // Vite integration
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },

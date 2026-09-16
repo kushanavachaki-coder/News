@@ -182,6 +182,34 @@ export default function App() {
     }
   };
 
+  const handleSelectStoryDetail = (story: NewsStory) => {
+    setSelectedStoryDetail(story);
+    
+    // Check if we need to fetch an AI summary dynamically
+    if (!story.whyItMatters || story.whyItMatters.trim() === "") {
+      fetch("/api/story/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyId: story.id })
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error("Summarization failed");
+          return res.json();
+        })
+        .then((data) => {
+          if (data.story) {
+            // Update the state of stories so we persist the summary in the active session
+            setStories((prev) => prev.map((s) => s.id === story.id ? data.story : s));
+            // Update the selectedStoryDetail to the summarized version!
+            setSelectedStoryDetail(data.story);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to dynamically summarize:", err);
+        });
+    }
+  };
+
   const handleTopicClick = (topicName: string) => {
     setActiveCategory(topicName);
     setActiveTab("home");
@@ -429,7 +457,7 @@ export default function App() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setSelectedStoryDetail(story);
+                                handleSelectStoryDetail(story);
                               }}
                               className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/10 transition active:scale-95"
                             >
@@ -447,7 +475,7 @@ export default function App() {
                           key={story.id}
                           className="rounded-3xl bg-white border border-sky-100/40 shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden text-left relative flex flex-col group cursor-pointer"
                           id={`news-card-${story.id}`}
-                          onClick={() => setSelectedStoryDetail(story)}
+                          onClick={() => handleSelectStoryDetail(story)}
                         >
                           {/* Sliced Image Container for Medium scale */}
                           <div className="relative h-40 w-full overflow-hidden bg-slate-50">
@@ -509,7 +537,7 @@ export default function App() {
                         key={story.id}
                         className="p-3.5 rounded-2xl bg-white hover:bg-slate-50 border border-sky-100/40 shadow-sm flex gap-3 cursor-pointer transition-all duration-300 text-left items-center justify-between group"
                         id={`news-card-quick-${story.id}`}
-                        onClick={() => setSelectedStoryDetail(story)}
+                        onClick={() => handleSelectStoryDetail(story)}
                       >
                         <div className="space-y-1 min-w-0 flex-1 pr-1.5">
                           <div className="flex items-center gap-1.5">
@@ -747,7 +775,7 @@ export default function App() {
                     (searchQuery ? filteredStories : stories.slice(0, 4)).map((story) => (
                       <div
                         key={`search-${story.id}`}
-                        onClick={() => setSelectedStoryDetail(story)}
+                        onClick={() => handleSelectStoryDetail(story)}
                         className="p-3.5 rounded-2xl bg-white hover:bg-slate-50 border border-sky-100/40 shadow-sm flex gap-3 cursor-pointer transition-all duration-300"
                       >
                         <div className="w-16 h-16 bg-slate-100 rounded-xl overflow-hidden shrink-0 border border-slate-100">
@@ -794,7 +822,7 @@ export default function App() {
                 onToggleSave={handleToggleSave}
                 onOpenExplain={(story) => setSelectedStoryToExplain(story)}
                 onOpenChat={(story) => setSelectedStoryToChat(story)}
-                onOpenStoryDetail={(story) => setSelectedStoryDetail(story)}
+                onOpenStoryDetail={(story) => handleSelectStoryDetail(story)}
               />
             )}
 
@@ -842,7 +870,7 @@ export default function App() {
                     {filteredSavedStories.map((savedStory) => (
                       <div
                         key={`saved-tab-${savedStory.id}`}
-                        onClick={() => setSelectedStoryDetail(savedStory)}
+                        onClick={() => handleSelectStoryDetail(savedStory)}
                         className="bg-white rounded-2xl border border-sky-100/40 p-4 shadow-sm flex items-center justify-between gap-4 text-left cursor-pointer hover:border-sky-300 relative group transition-all"
                       >
                         <div className="w-16 h-16 bg-slate-100 rounded-2xl overflow-hidden shrink-0">
@@ -888,7 +916,7 @@ export default function App() {
                 onUpdateProfile={setProfile}
                 savedStories={bookmarkedStories}
                 onRemoveSaved={handleToggleSave}
-                onOpenStoryDetail={(story) => setSelectedStoryDetail(story)}
+                onOpenStoryDetail={(story) => handleSelectStoryDetail(story)}
               />
             )}
 
