@@ -1,4 +1,4 @@
-import { NewsStory, TrendingTopic } from "./types";
+import { NewsStory, TrendingTopic } from "./types.js";
 
 export const TRENDING_TOPICS: TrendingTopic[] = [
   {

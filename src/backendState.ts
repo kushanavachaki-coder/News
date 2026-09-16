@@ -1,8 +1,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { INITIAL_STORIES, TRENDING_TOPICS } from "./newsData";
-import { fetchLiveNews, summarizeStoryWithGemini } from "./rssProcessor";
-import { NewsStory } from "./types";
+import { INITIAL_STORIES, TRENDING_TOPICS } from "./newsData.js";
+import { fetchLiveNews, summarizeStoryWithGemini } from "./rssProcessor.js";
+import { NewsStory } from "./types.js";
 
 // Load environment variables conditionally
 if (process.env.NODE_ENV !== "production") {

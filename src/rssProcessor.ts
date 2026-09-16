@@ -1,6 +1,6 @@
 import Parser from "rss-parser";
-import { RSS_SOURCES, RSSFeedSource } from "./rssConfig";
-import { NewsStory } from "./types";
+import { RSS_SOURCES, RSSFeedSource } from "./rssConfig.js";
+import { NewsStory } from "./types.js";
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Initialize RSS Parser with a 5-second timeout

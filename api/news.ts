@@ -1,5 +1,5 @@
 import { VercelRequest, VercelResponse } from "@vercel/node";
-import { LIVE_STORIES_CACHE, updateLiveNewsCache, getDynamicTrendingTopics, IS_FETCHING_FEEDS } from "../src/backendState";
+import { LIVE_STORIES_CACHE, updateLiveNewsCache, getDynamicTrendingTopics, IS_FETCHING_FEEDS } from "../src/backendState.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers

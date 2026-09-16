@@ -3,17 +3,17 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData";
-import { fetchLiveNews, summarizeStoryWithGemini, callGeminiWithRetry } from "./src/rssProcessor";
-import { RSS_SOURCES } from "./src/rssConfig";
-import { NewsStory } from "./src/types";
+import { INITIAL_STORIES, TRENDING_TOPICS } from "./src/newsData.js";
+import { fetchLiveNews, summarizeStoryWithGemini, callGeminiWithRetry } from "./src/rssProcessor.js";
+import { RSS_SOURCES } from "./src/rssConfig.js";
+import { NewsStory } from "./src/types.js";
 import {
   LIVE_STORIES_CACHE,
   IS_FETCHING_FEEDS,
   getAiClient,
   updateLiveNewsCache,
   getDynamicTrendingTopics,
-} from "./src/backendState";
+} from "./src/backendState.js";
 
 // Load environment variables
 dotenv.config();

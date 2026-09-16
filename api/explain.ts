@@ -1,8 +1,8 @@
 import { VercelRequest, VercelResponse } from "@vercel/node";
 import { GoogleGenAI, Type } from "@google/genai";
-import { LIVE_STORIES_CACHE, getAiClient } from "../src/backendState";
-import { INITIAL_STORIES } from "../src/newsData";
-import { callGeminiWithRetry } from "../src/rssProcessor";
+import { LIVE_STORIES_CACHE, getAiClient } from "../src/backendState.js";
+import { INITIAL_STORIES } from "../src/newsData.js";
+import { callGeminiWithRetry } from "../src/rssProcessor.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers
