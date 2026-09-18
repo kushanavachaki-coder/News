@@ -8,6 +8,10 @@ interface ProfileViewProps {
   savedStories: NewsStory[];
   onRemoveSaved: (storyId: string) => void;
   onOpenStoryDetail: (story: NewsStory) => void;
+  userEmail?: string;
+  onLogout: () => void;
+  isLoading?: boolean;
+  error?: string | null;
 }
 
 const TOPICS = [
@@ -31,6 +35,10 @@ export default function ProfileView({
   savedStories,
   onRemoveSaved,
   onOpenStoryDetail,
+  userEmail,
+  onLogout,
+  isLoading,
+  error,
 }: ProfileViewProps) {
   const toggleInterest = (topic: string) => {
     const isSelected = profile.interests.includes(topic);
@@ -72,18 +80,29 @@ export default function ProfileView({
         <div className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-sky-400 to-indigo-500 text-white font-black text-xl flex items-center justify-center shadow-sm">
           B
         </div>
-        <div className="space-y-1">
-          <h3 className="text-lg font-black text-indigo-950 tracking-tight leading-none">
-            BLINK Reader
+        <div className="space-y-1 min-w-0 flex-1">
+          <h3 className="text-base font-black text-indigo-950 tracking-tight leading-none truncate" title={userEmail || "BLINK Reader"}>
+            {userEmail || "BLINK Reader"}
           </h3>
-          <p className="text-xs text-indigo-900/50 font-semibold">
-            Personalized Feed Calibrator: Active
+          <p className="text-[10px] text-indigo-900/50 font-semibold truncate">
+            {userEmail ? "Logged in via Supabase Auth" : "Personalized Feed Calibrator: Active"}
           </p>
           <div className="flex items-center gap-1 text-[8px] font-black text-sky-600 uppercase bg-sky-100/60 px-2.5 py-0.5 rounded-md w-fit">
             <Sparkles className="w-2.5 h-2.5 fill-current" /> Beta Access Verified
           </div>
+          {isLoading && (
+            <div className="text-[9px] font-bold text-amber-600 animate-pulse mt-1">
+              Syncing with database...
+            </div>
+          )}
         </div>
       </div>
+
+      {error && (
+        <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 text-amber-800 text-xs font-semibold text-left">
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* 2. Reading Statistics (Point 4/5 surprise element) */}
       <div className="bg-white rounded-3xl p-5 border border-sky-100/50 shadow-sm space-y-3.5 text-left">
@@ -320,6 +339,17 @@ export default function ProfileView({
           This app utilizes client-safe AI gateways proxying to a full-stack Node backend. 
           To enable live Gemini-driven briefings, please add your <b>GEMINI_API_KEY</b> inside the <b>Settings &gt; Secrets</b> panel.
         </p>
+      </div>
+
+      {/* Log Out button */}
+      <div className="pt-2 pb-6">
+        <button
+          onClick={onLogout}
+          className="w-full py-3.5 bg-red-50 hover:bg-red-100/60 text-red-600 font-bold rounded-2xl transition text-xs tracking-wider uppercase border border-red-100 shadow-sm active:scale-98"
+          id="logout-btn"
+        >
+          Log Out of Account
+        </button>
       </div>
 
     </div>

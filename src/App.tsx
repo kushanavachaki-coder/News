@@ -16,21 +16,25 @@ import {
   BookOpen,
   X,
   Search,
-  BookMarked
+  BookMarked,
+  Loader2
 } from "lucide-react";
 
-import { NewsStory, TrendingTopic, UserProfile } from "./types";
-import { INITIAL_STORIES, TRENDING_TOPICS, WHAT_YOU_MISSED_STORIES } from "./newsData";
+import { NewsStory, TrendingTopic, UserProfile } from "./types.js";
+import { INITIAL_STORIES, TRENDING_TOPICS, WHAT_YOU_MISSED_STORIES } from "./newsData.js";
 
 // Modular Components
-import Header from "./components/Header";
-import DailyBriefing from "./components/DailyBriefing";
-import TrendingNow from "./components/TrendingNow";
-import Blink60 from "./components/Blink60";
-import ExplainDrawer from "./components/ExplainDrawer";
-import AskAIDrawer from "./components/AskAIDrawer";
-import StoryDetail from "./components/StoryDetail";
-import ProfileView from "./components/ProfileView";
+import Header from "./components/Header.js";
+import DailyBriefing from "./components/DailyBriefing.js";
+import TrendingNow from "./components/TrendingNow.js";
+import Blink60 from "./components/Blink60.js";
+import ExplainDrawer from "./components/ExplainDrawer.js";
+import AskAIDrawer from "./components/AskAIDrawer.js";
+import StoryDetail from "./components/StoryDetail.js";
+import ProfileView from "./components/ProfileView.js";
+import AuthView from "./components/AuthView.js";
+import { supabase } from "./lib/supabase.js";
+import { rankStoriesForUser } from "./lib/personalization.js";
 
 const CATEGORIES = [
   "For You",
@@ -57,6 +61,28 @@ const DAILY_QUOTES = [
 ];
 
 export default function App() {
+  // Auth states
+  const [session, setSession] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [dbProfileLoading, setDbProfileLoading] = useState(false);
+  const [dbProfileError, setDbProfileError] = useState<string | null>(null);
+  const isInitialLoad = React.useRef(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
+      setSession(initialSession);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   // Navigation & Tab States
   const [activeTab, setActiveTab] = useState<"home" | "explore" | "blink60" | "saved" | "profile">("home");
   const [activeCategory, setActiveCategory] = useState("For You");
@@ -114,14 +140,191 @@ export default function App() {
   const [selectedStoryToChat, setSelectedStoryToChat] = useState<NewsStory | null>(null);
   const [selectedStoryDetail, setSelectedStoryDetail] = useState<NewsStory | null>(null);
 
-  // Synced Caching Effects
+  // Synced Caching & Cloud Profiles Effects
   useEffect(() => {
     localStorage.setItem("blink_saved_stories", JSON.stringify(savedStoryIds));
   }, [savedStoryIds]);
 
+  // Load saved stories from Supabase when session changes
+  useEffect(() => {
+    if (!session?.user?.id) {
+      // If logged out, load from local storage
+      const cached = localStorage.getItem("blink_saved_stories");
+      setSavedStoryIds(cached ? JSON.parse(cached) : []);
+      return;
+    }
+
+    const fetchSavedStories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("saved_stories")
+          .select("story_id")
+          .eq("user_id", session.user.id);
+
+        if (error) {
+          throw error;
+        }
+
+        const cloudIds = data ? data.map((row: any) => row.story_id) : [];
+
+        // Migrate local stories to database if present
+        const localCached = localStorage.getItem("blink_saved_stories");
+        const localIds: string[] = localCached ? JSON.parse(localCached) : [];
+
+        if (localIds.length > 0) {
+          const toMigrate = localIds.filter((id) => !cloudIds.includes(id));
+
+          if (toMigrate.length > 0) {
+            const rowsToInsert = toMigrate.map((id) => ({
+              user_id: session.user.id,
+              story_id: id,
+            }));
+
+            const { error: insertError } = await supabase
+              .from("saved_stories")
+              .insert(rowsToInsert);
+
+            if (!insertError) {
+              console.log(`Migrated ${toMigrate.length} local bookmarks to Supabase.`);
+              const merged = Array.from(new Set([...cloudIds, ...toMigrate]));
+              setSavedStoryIds(merged);
+              localStorage.setItem("blink_saved_stories", JSON.stringify([]));
+              return;
+            } else {
+              console.error("Failed to migrate local bookmarks:", insertError);
+            }
+          }
+        }
+
+        setSavedStoryIds(cloudIds);
+      } catch (err: any) {
+        const isMissingTable = err.code === "PGRST205" || (err.message && err.message.includes("saved_stories"));
+        if (isMissingTable) {
+          console.warn("saved_stories table is not configured on Supabase yet. Using local storage.");
+          const cached = localStorage.getItem("blink_saved_stories");
+          setSavedStoryIds(cached ? JSON.parse(cached) : []);
+        } else {
+          console.error("Failed to load saved stories from Supabase:", err);
+        }
+      }
+    };
+
+    fetchSavedStories();
+  }, [session]);
+
+  // Load profile from Supabase when session changes
+  useEffect(() => {
+    if (!session?.user?.id) {
+      isInitialLoad.current = false;
+      return;
+    }
+
+    const fetchProfile = async () => {
+      isInitialLoad.current = true;
+      setDbProfileLoading(true);
+      setDbProfileError(null);
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", session.user.id)
+          .maybeSingle();
+
+        if (error) {
+          throw error;
+        }
+
+        if (data) {
+          setProfile({
+            interests: data.interests || ["AI", "Technology", "Space", "Business"],
+            readingPreference: (data.reading_preference as any) || "Balanced",
+            notifications: {
+              breakingNews: data.breaking_news ?? true,
+              dailyBriefing: data.daily_briefing ?? true,
+              topicUpdates: data.topic_updates ?? true,
+              sportsUpdates: data.sports_updates ?? true,
+              techUpdates: data.tech_updates ?? true,
+            }
+          });
+        } else {
+          // Fallback creation of profile row if the automatic trigger did not run
+          const defaultProfile = {
+            id: session.user.id,
+            email: session.user.email || "",
+            interests: ["AI", "Technology", "Space", "Business"],
+            reading_preference: "Balanced",
+            breaking_news: true,
+            daily_briefing: true,
+            topic_updates: true,
+            sports_updates: true,
+            tech_updates: true,
+          };
+
+          const { error: insertError } = await supabase
+            .from("profiles")
+            .insert([defaultProfile]);
+
+          if (insertError) {
+            console.error("Failed to insert default profile:", insertError);
+          }
+        }
+      } catch (err: any) {
+        const isMissingTable = err.code === "PGRST205" || (err.message && err.message.includes("profiles"));
+        if (isMissingTable) {
+          console.warn("Profiles table is not yet configured on Supabase. Defaulting to offline cache.");
+          setDbProfileError(
+            "The 'profiles' table has not been created in Supabase yet. Please execute the SQL migration script in your Supabase SQL Editor to enable persistent cloud profile syncing."
+          );
+        } else {
+          console.error("Error loading profile from Supabase:", err);
+          setDbProfileError(err.message || "Failed to load cloud profile.");
+        }
+      } finally {
+        setDbProfileLoading(false);
+        setTimeout(() => {
+          isInitialLoad.current = false;
+        }, 150);
+      }
+    };
+
+    fetchProfile();
+  }, [session]);
+
+  // Save profile to local storage & sync to Supabase on state change
   useEffect(() => {
     localStorage.setItem("blink_user_profile", JSON.stringify(profile));
-  }, [profile]);
+
+    if (session?.user?.id && !isInitialLoad.current) {
+      const updateProfileDb = async () => {
+        try {
+          const { error } = await supabase
+            .from("profiles")
+            .update({
+              interests: profile.interests,
+              reading_preference: profile.readingPreference,
+              breaking_news: profile.notifications.breakingNews,
+              daily_briefing: profile.notifications.dailyBriefing,
+              topic_updates: profile.notifications.topicUpdates,
+              sports_updates: profile.notifications.sportsUpdates,
+              tech_updates: profile.notifications.techUpdates,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", session.user.id);
+
+          if (error) {
+            throw error;
+          }
+        } catch (err: any) {
+          const isMissingTable = err.code === "PGRST205" || (err.message && err.message.includes("profiles"));
+          if (!isMissingTable) {
+            console.error("Failed to sync profile update to Supabase:", err);
+          }
+        }
+      };
+
+      updateProfileDb();
+    }
+  }, [profile, session]);
 
   useEffect(() => {
     localStorage.setItem("blink_recent_searches", JSON.stringify(recentSearches));
@@ -173,38 +376,62 @@ export default function App() {
       );
     }
 
-    const preferredCategories = profile.interests.map((i) => i.toLowerCase());
-    
-    const preferredStories = stories.filter((story) =>
-      preferredCategories.includes(story.category.toLowerCase())
-    );
-    const otherStories = stories.filter(
-      (story) => !preferredCategories.includes(story.category.toLowerCase())
-    );
-
-    const personalizedFeed: NewsStory[] = [];
-    let prefIndex = 0;
-    let otherIndex = 0;
-
-    while (prefIndex < preferredStories.length || otherIndex < otherStories.length) {
-      for (let i = 0; i < 2; i++) {
-        if (prefIndex < preferredStories.length) {
-          personalizedFeed.push(preferredStories[prefIndex++]);
-        }
-      }
-      if (otherIndex < otherStories.length) {
-        personalizedFeed.push(otherStories[otherIndex++]);
-      }
-    }
-
-    return personalizedFeed.length > 0 ? personalizedFeed : stories;
+    return rankStoriesForUser(stories, profile);
   };
 
-  const handleToggleSave = (storyId: string) => {
-    if (savedStoryIds.includes(storyId)) {
+  const handleToggleSave = async (storyId: string) => {
+    const isCurrentlySaved = savedStoryIds.includes(storyId);
+
+    // Instant local UI state update
+    if (isCurrentlySaved) {
       setSavedStoryIds((prev) => prev.filter((id) => id !== storyId));
     } else {
       setSavedStoryIds((prev) => [...prev, storyId]);
+    }
+
+    // Sync with Supabase if user is logged in
+    if (session?.user?.id) {
+      try {
+        if (isCurrentlySaved) {
+          const { error } = await supabase
+            .from("saved_stories")
+            .delete()
+            .eq("user_id", session.user.id)
+            .eq("story_id", storyId);
+
+          if (error) {
+            throw error;
+          }
+        } else {
+          const { error } = await supabase
+            .from("saved_stories")
+            .insert([{
+              user_id: session.user.id,
+              story_id: storyId,
+            }]);
+
+          if (error) {
+            // Check for unique key duplicate insert (Postgres code 23505)
+            const isDuplicate = error.code === "23505" || error.message?.includes("duplicate");
+            if (!isDuplicate) {
+              throw error;
+            }
+          }
+        }
+      } catch (err: any) {
+        const isMissingTable = err.code === "PGRST205" || (err.message && err.message.includes("saved_stories"));
+        if (isMissingTable) {
+          console.warn("saved_stories table has not been created on Supabase. Operating in local storage mode.");
+        } else {
+          console.error("Failed to sync saved stories with Supabase:", err);
+          // Rollback local UI state on failure
+          if (isCurrentlySaved) {
+            setSavedStoryIds((prev) => Array.from(new Set([...prev, storyId])));
+          } else {
+            setSavedStoryIds((prev) => prev.filter((id) => id !== storyId));
+          }
+        }
+      }
     }
   };
 
@@ -487,6 +714,11 @@ export default function App() {
                           {/* Copy Content */}
                           <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
                             <div className="space-y-2">
+                              {story.personalizationReason && (
+                                <div className="inline-flex items-center gap-1.5 text-[9px] font-black text-indigo-600 bg-indigo-50/60 border border-indigo-100 px-2 py-0.5 rounded-md w-fit uppercase tracking-wider mb-1">
+                                  <Sparkles className="w-2.5 h-2.5 fill-current text-indigo-500 animate-pulse" /> {story.personalizationReason}
+                                </div>
+                              )}
                               <h3 className="text-lg font-black text-indigo-950 tracking-tight leading-snug group-hover:text-indigo-600 transition-colors duration-200">
                                 {story.title}
                               </h3>
@@ -584,6 +816,11 @@ export default function App() {
 
                           <div className="p-4.5 flex-1 flex flex-col justify-between space-y-3">
                             <div className="space-y-1">
+                              {story.personalizationReason && (
+                                <div className="inline-flex items-center gap-1.5 text-[8.5px] font-black text-indigo-600 bg-indigo-50/60 border border-indigo-100 px-2 py-0.5 rounded-md w-fit uppercase tracking-wider mb-1">
+                                  <Sparkles className="w-2.5 h-2.5 fill-current text-indigo-500 animate-pulse" /> {story.personalizationReason}
+                                </div>
+                              )}
                               <h3 className="text-base font-black text-indigo-950 tracking-tight leading-snug group-hover:text-indigo-600 transition-colors duration-200">
                                 {story.title}
                               </h3>
@@ -631,6 +868,11 @@ export default function App() {
                         onClick={() => handleSelectStoryDetail(story)}
                       >
                         <div className="space-y-1 min-w-0 flex-1 pr-1.5">
+                          {story.personalizationReason && (
+                            <div className="inline-flex items-center gap-1.5 text-[8px] font-black text-indigo-600 bg-indigo-50/60 border border-indigo-100 px-2 py-0.5 rounded-md w-fit uppercase tracking-wider mb-1">
+                              <Sparkles className="w-2.5 h-2.5 fill-current text-indigo-500 animate-pulse" /> {story.personalizationReason}
+                            </div>
+                          )}
                           <div className="flex items-center gap-1.5">
                             <span className="text-[8px] font-black text-sky-500 uppercase tracking-widest">
                               {story.category}
@@ -1002,13 +1244,37 @@ export default function App() {
 
             {/* SCREEN 2: PROFILE / DASHBOARD EXPERIENCE */}
             {activeTab === "profile" && (
-              <ProfileView
-                profile={profile}
-                onUpdateProfile={setProfile}
-                savedStories={bookmarkedStories}
-                onRemoveSaved={handleToggleSave}
-                onOpenStoryDetail={(story) => handleSelectStoryDetail(story)}
-              />
+              authLoading ? (
+                <div className="flex-1 flex flex-col justify-center items-center text-center p-6 space-y-4" id="auth-loading-screen">
+                  <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-500 shadow-sm animate-pulse">
+                    <Loader2 className="w-6 h-6 animate-spin text-indigo-600" />
+                  </div>
+                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">
+                    Securing session...
+                  </p>
+                </div>
+              ) : session ? (
+                <ProfileView
+                  profile={profile}
+                  onUpdateProfile={setProfile}
+                  savedStories={bookmarkedStories}
+                  onRemoveSaved={handleToggleSave}
+                  onOpenStoryDetail={(story) => handleSelectStoryDetail(story)}
+                  userEmail={session.user?.email}
+                  onLogout={async () => {
+                    await supabase.auth.signOut();
+                    setSession(null);
+                  }}
+                  isLoading={dbProfileLoading}
+                  error={dbProfileError}
+                />
+              ) : (
+                <AuthView
+                  onAuthSuccess={(newSession) => {
+                    setSession(newSession);
+                  }}
+                />
+              )
             )}
 
           </div>

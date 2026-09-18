@@ -16,6 +16,7 @@ export interface NewsStory {
   background?: string;
   originalUrl?: string;
   pubDateMs?: number;
+  personalizationReason?: string;
 }
 
 export interface TimelineItem {
@@ -46,4 +47,27 @@ export interface UserProfile {
 export interface SavedStory {
   id: string;
   savedAt: string;
+}
+
+export interface DbProfile {
+  id: string;
+  email: string;
+  name?: string | null;
+  avatar_url?: string | null;
+  interests: string[];
+  reading_preference: string;
+  breaking_news: boolean;
+  daily_briefing: boolean;
+  topic_updates: boolean;
+  sports_updates: boolean;
+  tech_updates: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DbSavedStory {
+  id: string;
+  user_id: string;
+  story_id: string;
+  saved_at: string;
 }
